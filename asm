@@ -1,5 +1,4 @@
-#!/usr/bin/python3
-
+#!/usr/bin/python
 """
  *****************************************************************************
    FILE:        sasm
@@ -94,7 +93,7 @@ def first_pass():
     infile = open(filename, "r")
 
     #reads the first line with characters
-    line = read_file(infile)
+    (caseline, line) = read_file(infile)
     first_line = line.split()
 
     error_catch(line)
@@ -205,7 +204,7 @@ def first_pass():
     end = False
 
     while not end:
-      n_line = read_file(infile)
+      (o_line, n_line) = read_file(infile)
       next_line = n_line.split()
 
       if 'end' in next_line:
@@ -386,15 +385,19 @@ def read_file(infile):
 
     while not more_instructions:
       line = infile.readline()
-      line = line.lower()
+
+      if line == "":
+        print("Error: No end statement")
+        exit(1)
 
       is_comment = comment_test(line)
       if not is_comment:
         more_instructions = True
 
     line = detabify(line)
+    cased_line = line.lower()
 
-    return line[:40]
+    return (line[:40], cased_line[:40])
 
 def comment_test(line):
     on_col = 0
@@ -403,7 +406,7 @@ def comment_test(line):
     more_instructions = False
 
     for char in line:
-      valid_chars = re.match(r'^[A-Za-z]', char)
+      valid_chars = re.match(r'^[A-Za-z0-9]', char)
       #comment_chars = re.match(r'\s|\t')
 
       if char == ".":
@@ -435,7 +438,13 @@ def comment_test(line):
 
 def label_test(word):
 
+    tries_to_label = re.match(r'^.*:', word)
     is_a_label = re.match(r'^\s*[A-Za-z][A-Za-z0-9]*:', word)
+
+    if tries_to_label and (not is_a_label):
+      print("invalid label")
+      exit(1)
+
     # r = treat as raw string
     # ^ = start at beginning of string
     # \s = any whitespace character
@@ -499,7 +508,7 @@ def print_symbol_table():
 
     all_keys = sorted(symbol_table)
     for key in all_keys:
-      print('  %s: ' % key, end='')
+      #print('  %s: ' % key, end='')
       print(symbol_table[key])
 
 
@@ -530,18 +539,18 @@ def second_pass():
     global optable
     global offset
 
-    format1 = ["fix", "float", "hio", "norm", "sio"]
-    format2 = ["addr", "clear", "compr", "divr", "mulr", "rmo", "shiftl", "shiftr", "subr", "svc", "tixr"]
+    format_1 = ["fix", "float", "hio", "norm", "sio", "tio"]
+    format_2 = ["addr", "clear", "compr", "divr", "mulr", "rmo", "shiftl", "shiftr", "subr", "svc", "tixr"]
 
     in_file = sys.argv[1]
     out_file = sys.argv[2]
 
     infile = open(in_file, 'r')
-    outfile = open(out_file, 'w')
+    outfile = open(out_file, 'wb')
 
     object_code = ""
 
-    line = read_file(infile)
+    (ogline, line) = read_file(infile)
     words_line = line.split()
 
     (has_start, hcode) = write_header(line, outfile)
@@ -550,13 +559,14 @@ def second_pass():
     start_offset = offset
 
     if has_start:
-      line = read_file(infile)
+      (ogline, line) = read_file(infile)
       words_line = line.split()
 
 
     t_size = 0
     text_record = ""
     based_addressing = False
+    reserving = False
     end = False
 
     #print(three_bytes(offset))
@@ -568,88 +578,117 @@ def second_pass():
     #leave a blank space for the size
 
     while not end:
+      has_label = label_test_2(line)
       opcode = get_opcode(line)
 
       #special cases:
       if opcode == "rsub":
+        if has_label:
+          if len(words_line) > 2:
+            print("extra characters")
+            exit(1)
+        else:
+          if len(words_line) > 1:
+            print("extra characters")
+            exit(1)
+
         text_record += sic_instruction(opcode, "0")
         offset = hex_add(offset, 3)
         t_size += 3
         pass
 
-      elif opcode in format1:
+      elif opcode in format_1:
         text_record += format1(opcode)
         offset = hex_add(offset, 1)
         t_size += 1
 
-      elif opcode in format2:
+      elif opcode in format_2:
         (r1, r2) = f2_operands(line)
 
         text_record += format2(opcode, r1, r2)
         offset = hex_add(offset, 2)
         t_size += 2
 
+      elif opcode == "byte":
+        (b_value, size) = byte_value(ogline, line)
+        text_record += b_value
+        t_size += size
+
       else:
 
         #operand is a 
         operand = find_operand(line)
 
-        if opcode == "byte":
-          text_record += byte_value(operand)
-          #t_size += 3
+        if (operand[0] == "#") or (operand[0] == "@"):
+          comp_operand = operand[1:]
+        else:
+          comp_operand = operand
 
-        elif opcode == "word":
+        if opcode == "word":
           text_record += word_value(operand)
           t_size += 3
 
         elif opcode == "resb":
-          record_size = "%02x" % t_size
+          reserving = True
 
-          first = text_record[:8]
-          rest = text_record[8:]
+          if t_size > 0:
+            record_size = "%02x" % t_size
 
-          text_record = first + record_size + rest
+            first = text_record[:7]
+            rest = text_record[7:]
 
-          object_code += text_record 
+            text_record = first + record_size + rest
 
-          t_size = 0
+            object_code += text_record 
+
+            t_size = 0
           text_record = reserve_byte(operand)
 
 
 
         elif opcode == "resw":
-          record_size = "%02x" % t_size
 
-          text_record[7] = record_size[0]
-          text_record[8] = record_size[1]
+          reserving = True
 
-          object_code += text_record 
+          if t_size > 0:
+            record_size = "%02x" % t_size
 
-          t_size = 0
+            first = text_record[:7]
+            rest = text_record[7:]
+
+            text_record = first + record_size + rest
+            object_code += text_record 
+
+            t_size = 0
           text_record = reserve_word(operand)
 
 
         elif opcode == "base":
           based_addressing = True
-          base = offset
+          if has_label:
+            base = hex(int(words_line[2]))[2:]
+          else:
+            base = hex(int(words_line[1]))[2:]
 
         elif opcode == "nobase":
           based_addressing = False
+
+
+        elif opcode[0] == "+":
+        #extended
+          text_record += format4(opcode, operand)
+          offset = hex_add(offset, 4)
+          t_size += 4
 
 
         elif opcode not in optable:
           print("Invalid operation: %s" % opcode)
           exit(1)
 
-
-        elif opcode[-1] == "+":
-        #extended
-          text_record += format4(opcode, operand)
-          pass
-
         #this only works if the operand is not an int
-        elif operand <= "7fff":
+        elif (comp_operand <= "007fff") and not (operand[0] in ['#', '@']) :
         #SIC
+          #print(line)
           text_record += sic_instruction(opcode, operand)
           offset = hex_add(offset, 3)
           t_size += 3
@@ -660,7 +699,7 @@ def second_pass():
           offset = hex_add(offset, 3)
           t_size += 3
 
-        elif operand <= "FFF":
+        elif comp_operand <= "000FFF":
         #direct
           text_record += direct_instruction(opcode, operand)
           offset = hex_add(offset, 3)
@@ -674,41 +713,193 @@ def second_pass():
 
 
       #CHECK FOR 65 BYTE LIMIT
+      if t_size >= 65:
+        if t_size == 65:
+          record_size = "%02x" % t_size
 
+          first = text_record[:7]
+          rest = text_record[7:]
 
-      line = read_file(infile)
+          text_record = first + record_size + rest
+          object_code += text_record 
+
+          t_size = 0
+          text_record = "T" + three_bytes(offset)
+
+        else:
+          #T + 6 for address plus 130 for text
+          sized_text_record = text_record[:135]
+          new_text_record = text_record[135:]
+          record_size = "%02x" % 64
+
+          first = sized_text_record[:7]
+          rest = sized_text_record[7:]
+
+          text_record = first + record_size + rest
+          object_code += text_record 
+
+          t_size = int(len(new_text_record) / 2)
+          t_offset = hex_sub(offset, hex(t_size)[2:])
+          text_record = "T" + three_bytes(t_offset) + new_text_record
+
+      (ogline, line) = read_file(infile)
       words_line = line.split()
       if "end" in words_line:
         end = True
-        object_code += text_record
+        if len(words_line) > 1:
+          entry_label = words_line[1]
+          entry_loc = symbol_table[entry_label.upper()]
+        else:
+          entry_loc = three_bytes(start_offset)
+          #print(entry_loc)
+
+        if not reserving:
+          record_size = "%02x" % t_size
+          first = text_record[:7]
+          rest = text_record[7:]
+
+          text_record = first + record_size + rest
+
+          object_code += text_record 
+
+      elif (not ("resb" in words_line)) and (not ("resw" in words_line)):
+        reserving = False
+
 
       #end = True
       #object_code += text_record
 
 
-    object_code = object_code + "E" + three_bytes(start_offset)
-    print(object_code)
+    object_code = object_code + "E" + entry_loc
 
-    to_machine_code(object_code)
-
+    to_machine_code(object_code, outfile)
 
 
 
-def to_machine_code(object_code):
 
+def to_machine_code(object_code, outfile):
+    hex_list = []
+
+    i = 0
+    while i < len(object_code):
+      if i <= 6:
+        hex_let = hex(ord(object_code[i]))
+        hex_list.append(hex_let)
+        i += 1
+
+      else:
+        if (object_code[i] == "T") or (object_code[i] == "E"):
+          hex_let = hex(ord(object_code[i]))
+          hex_list.append(hex_let)
+          i += 1
+        else:
+          hex_val = "0x" + object_code[i] + object_code[i + 1]
+          hex_list.append(hex_val)
+          i += 2
+
+
+
+    ascii_values = []
+    for elem in hex_list:
+      #print(elem)
+      #a temporary fix to a stupid problem (adds an extra byte for some reason)
+      char = chr(int(elem, 0))
+      #print(char)
+      outfile.write(char)
 
 
 #byte
-def byte_value(value):
-    pass
+def byte_value(line, lowerline):
+    global offset
+    #print line
+
+    object_code = ""
+
+    next_line = line.split()
+
+    byte_loc = next_line.index('byte')
+    byte_value = next_line[byte_loc + 1]
+    #print(next_line)
+    #print(byte_value)
+
+    bytes_length = len(byte_value) - 3
+
+    if (byte_value[0] == 'C') or (byte_value[0] == 'c'):
+      #need to check for ERROR if user forgot to put quotes
+      #minus 3 because of C and quotes
+      if byte_value[-1] == "\'":
+        closed = True
+        object_code += byte_value[2:-1]
+      else:
+        bytes_length += 1
+        closed = False
+        object_code += byte_value[2:]
+
+      #print(bytes_length)
+      offset = hex_add(offset, bytes_length)
+      index = byte_loc + 1
+
+      while not closed:
+        index += 1
+        byte_value = next_line[index]
+        #need to check for ERROR if user forgot to put quotes
+        #minus 3 because of C and quotes
+        #need to account for if a person inputs many spaces
+        if byte_value[-1] == "\'":
+          closed = True
+          object_code += byte_value[2:-1]
+          byte_value = next_line[index]
+          bytes_length = len(byte_value)
+          #print(bytes_length)
+          offset = hex_add(offset, bytes_length)
+        else:
+          byte_value = next_line[index]
+          object_code += byte_value[2:]
+          bytes_length = len(byte_value) + 1
+          #print(bytes_length)
+          offset = hex_add(offset, bytes_length)
+          closed = False
+
+      #PLEASE TEST THIS WOOLSON
+      hex_object_code = ""
+      for char in object_code:
+        hexed = hex(ord(char))[2:]
+        hex_object_code += hexed
+
+      object_code = hex_object_code
+
+
+    elif (byte_value[0] == 'X') or (byte_value[0] == 'x'):
+      next_line = (line.lower()).split()
+
+      byte_loc = next_line.index('byte')
+      byte_value = next_line[byte_loc + 1]
+
+      #print(bytes_length)
+      value = byte_value[2:-1]
+      if bytes_length % 2 == 0:
+        object_code += value
+        offset = hex_add(offset, int(bytes_length / 2))
+        bytes_length = int(bytes_length / 2)
+      else:
+        object_code = object_code + "0" + byte_value[2:-1]
+        offset = hex_add(offset, int((bytes_length + 1) / 2))
+        bytes_length = int((bytes_length + 1) / 2)
+
+    else:
+      value = hex(int(byte_value))[2:]
+      object_code += value
+      offset = hex_add(offset, 1)
+      bytes_length = 1
+
+    return (object_code, bytes_length)
 
   
 #word
 def word_value(operand):
 #should probably check if word is too large
     global offset
-    
-
+  
     """
     if operand > FFFFFF raise error
     """
@@ -725,9 +916,9 @@ def word_value(operand):
 def reserve_byte(total_bytes):
   global offset
 
-  offset += total_bytes
+  offset = hex_add(offset, int(total_bytes))
 
-  object_code = "T" + three_bytes(offset) + "00"
+  object_code = "T" + three_bytes(offset)
 
   return object_code
 
@@ -735,9 +926,9 @@ def reserve_byte(total_bytes):
 def reserve_word(words):
   global offset
 
-  offset += words * 3
+  offset = hex_add(offset, int(words) * 3)
 
-  object_code = "T" + three_bytes(offset) + "00"
+  object_code = "T" + three_bytes(offset)
 
   return object_code
 
@@ -746,32 +937,36 @@ def reserve_word(words):
 def format4(mneumonic, operand):
     global offset
 
+    mneumonic = mneumonic[1:]
+
     opcode = "{0:08b}".format(int(optable[mneumonic], 0))[:6]
 
     #n i x b p e
     if operand[0] == "@":
-      n = 1
+      n = "1"
+      operand = operand[1:]
     else:
-      n = 0
+      n = "0"
 
     if operand[0] == '#':
-      i = 1
+      i = "1"
+      operand = operand[1:]
     else:
-      i = 0
+      i = "0"
 
-    if (n == 0) and (i == 0):
-      n = 1
-      i = 1
+    if (n == "0") and (i == "0"):
+      n = "1"
+      i = "1"
 
     if operand[-1] == "x":
-      x = 1
+      x = "1"
       operand = operand[:-3]
     else:
-      x = 0
+      x = "0"
 
-    b = 0
-    p = 0
-    e = 1
+    b = "0"
+    p = "0"
+    e = "1"
 
     if type(operand) == int:
       address = "{0:020b}".format(operand)
@@ -792,29 +987,31 @@ def based_instruction(mneumonic, operand, base):
 
     #n i x b p e
     if operand[0] == "@":
-      n = 1
+      n = "1"
+      operand = operand[1:]
     else:
-      n = 0
+      n = "0"
 
     if operand[0] == '#':
-      i = 1
+      i = "1"
+      operand = operand[1:]
     else:
-      i = 0
+      i = "0"
 
-    if (n == 0) and (i == 0):
-      n = 1
-      i = 1
+    if (n == "0") and (i == "0"):
+      n = "1"
+      i = "1"
 
     if operand[-1] == "x":
-      x = 1
+      x = "1"
       operand = operand[:-3]
     else:
-      x = 0
+      x = "0"
 
-    b = 1
-    p = 0
+    b = "1"
+    p = "0"
 
-    e = 0
+    e = "0"
 
     if type(operand) != int:
       operand = int("0x" + operand, 0)
@@ -822,7 +1019,7 @@ def based_instruction(mneumonic, operand, base):
     int_base = int("0x" + base, 0)
     int_address = operand - int_base
 
-    address = "{0:012b}".format(int("0x" + int_address, 0))    
+    address = "{0:012b}".format(int_address)    
 
     object_code = opcode + n + i + x + b + p + e + address
 
@@ -841,29 +1038,31 @@ def pc_instruction(mneumonic, operand):
 
     #n i x b p e
     if operand[0] == "@":
-      n = 1
+      n = "1"
+      operand = operand[1:]
     else:
-      n = 0
+      n = "0"
 
     if operand[0] == '#':
-      i = 1
+      i = "1"
+      operand = operand[1:]
     else:
-      i = 0
+      i = "0"
 
-    if (n == 0) and (i == 0):
-      n = 1
-      i = 1
+    if (n == "0") and (i == "0"):
+      n = "1"
+      i = "1"
 
     if operand[-1] == "x":
-      x = 1
+      x = "1"
       operand = operand[:-3]
     else:
-      x = 0
+      x = "0"
 
-    b = 0
-    p = 1
+    b = "0"
+    p = "1"
 
-    e = 0
+    e = "0"
 
     if type(operand) != int:
       operand = int("0x" + operand, 0)
@@ -871,7 +1070,11 @@ def pc_instruction(mneumonic, operand):
     int_offset = int("0x" + offset, 0)
     int_address = operand - int_offset
 
-    address = "{0:012b}".format(int("0x" + int_address, 0))    
+    if (int_address < -2048) or (int_address > 2047):
+      print("need to use extended")
+      exit(1)
+
+    address = "{0:012b}".format(int_address)    
 
     object_code = opcode + n + i + x + b + p + e + address
 
@@ -889,29 +1092,31 @@ def direct_instruction(mneumonic, operand):
 
     #n i x b p e
     if operand[0] == "@":
-      n = 1
+      n = "1"
+      operand = operand[1:]
     else:
-      n = 0
+      n = "0"
 
     if operand[0] == '#':
-      i = 1
+      i = "1"
+      operand = operand[1:]
     else:
-      i = 0
+      i = "0"
 
-    if (n == 0) and (i == 0):
-      n = 1
-      i = 1
+    if (n == "0") and (i == "0"):
+      n = "1"
+      i = "1"
 
     if operand[-1] == "x":
-      x = 1
+      x = "1"
       operand = operand[:-3]
     else:
-      x = 0
+      x = "0"
 
-    b = 0
-    p = 0
+    b = "0"
+    p = "0"
 
-    e = 0
+    e = "0"
 
     if type(operand) == int:
       address = "{0:012b}".format(operand)
@@ -931,6 +1136,8 @@ def direct_instruction(mneumonic, operand):
 def sic_instruction(mneumonic, operand):
     global optable
     global symbol_table
+
+    #print(mneumonic, operand)
 
     #bin(int(hex)) -> '0b' + binary string
     opcode = "{0:08b}".format(int(optable[mneumonic], 0))
@@ -972,33 +1179,60 @@ def format1(mneumonic):
 
 
 def format2(mneumonic, r1, r2):
-    #I have not tested this at all
 
-    registers = ["a", "x", "l", "b", "s", "t", "f"]
+    registers = ["a", "x", "l", "b", "s", "t", "f", "", "pc", "sw"]
 
     opcode = "{0:08b}".format(int(optable[mneumonic], 0))
 
-    r1_code = False
-    r2_code = False
-    for i in range(0, 7):
-      if r1 == registers[i]:
-        r1_code = i
-      if r2 == registers[i]:
-        r2_code = i
 
-    if not r1_code:
-      if r1 > 15:
-        print("Argument too large: %s" % r1)
-      else:
-        r1_code = bin(int(r1))[2:]
+    #shiftl, shiftr (r2 = r2-1)
+    if (mneumonic == "shiftr") or (mneumonic == "shiftl"):
+      r1_code = "wow"
+      r2_code = "wow"
+      for i in range(0, 7):
+        if r1 == registers[i]:
+          r1_code = '{0:04b}'.format(i)
 
+      if r1_code == "wow": 
+        r1 = int(r1)
+        if r1 > 16:
+          print("Argument too large: %s" % r1)
+          exit(1)
+        else:
+          r1_code = '{0:04b}'.format(r1)
 
-    if not r2_code:
-      if r2 > 15:
+      r2 = int(r2)
+      if r2 > 16:
         print("Argument too large: %s" % r2)
+        exit(1)
       else:
-        r2_code = bin(int(r2))[2:]
+        r2_code = '{0:04b}'.format(r2 - 1)
 
+    else:
+      r1_code = "wow"
+      r2_code = "wow"
+      for i in range(0, 10):
+        if r1 == registers[i]:
+          r1_code = '{0:04b}'.format(i)
+        if r2 == registers[i]:
+          r2_code = '{0:04b}'.format(i)
+
+      if r1_code == "wow": 
+        r1 = int(r1)
+        if r1 > 15:
+          print("Argument too large: %s" % r1)
+          exit(1)
+        else:
+          r1_code = '{0:04b}'.format(r1)
+
+
+      if r2_code == "wow":
+        r2 = int(r2)
+        if r2 > 15:
+          print("Argument too large: %s" % r2)
+          exit(1)
+        else:
+          r2_code = '{0:04b}'.format(r2)
 
     object_code = opcode + r1_code + r2_code
 
@@ -1034,9 +1268,16 @@ def find_operand(line):
 
     if has_label and (sline[0][-1] == ":"):
       operand = sline[2]
+      if len(sline) > 3:
+        if (sline[3] != "x") or (len(sline) > 4):
+          print("too many arguments")
+          exit(1)
     else:
       operand = sline[1]
-
+      if len(sline) > 2:
+        if (sline[2] != "x") or (len(sline) > 3):
+          print("too many arguments")
+          exit(1)
 
     if operand[-1] == ",":
       operand = operand[:-1]
@@ -1045,14 +1286,48 @@ def find_operand(line):
       else:
         operand = hex(int(operand))[2:] + ", x"
 
+
+    elif operand[0] == "#":
+      operand = operand[1:]
+      if operand.upper() in symbol_table:
+        operand = "#" + symbol_table[operand.upper()]
+      else:
+        operand = "#" + hex(int(operand))[2:]
+
+    elif operand[0] == "@":
+      operand = operand[1:]
+      if operand.upper() in symbol_table:
+        operand = "@" + symbol_table[operand.upper()]
+      else:
+        operand = "@" + hex(int(operand))[2:]
+
     else:
       if operand.upper() in symbol_table:
         operand = symbol_table[operand.upper()]
       else:
-        operand = hex(int(operand))[2:]
-
+        if int(operand) < 0:
+          operand = twos_compliment(int(operand))
+        else:
+          operand = hex(int(operand))[2:]
 
     return operand
+
+
+def twos_compliment(number):
+
+  bin_num = '{0:024b}'.format(abs(number))
+
+  twos_comp = "0b"
+  for bit in bin_num:
+    if bit == "0":
+      twos_comp += "1"
+    else:
+      twos_comp += "0"
+
+  temp_num = int(twos_comp, 0)
+  temp_num += 1
+
+  return hex(temp_num)[2:]
 
 
 def f2_operands(line):
@@ -1060,12 +1335,26 @@ def f2_operands(line):
     sline = line.split()
     has_label = label_test_2(sline[0])
 
+    #clear, svc, tixr
+    opcode = get_opcode(line)
+
     if has_label and (sline[0][-1] == ":"):
-      r1 = sline[2]
-      r2 = sline[3]
+      if opcode in ["clear", "svc", "tixr"]:
+        r1 = sline[2]
+        r2 = 0
+      else:
+        r1 = sline[2][:-1]
+        r2 = sline[3]
     else:
-      r1 = sline[1]
-      r2 = sline[2]
+      if opcode in ["clear", "svc", "tixr"]:
+        r1 = sline[1]
+        r2 = 0
+      else:
+        r1 = sline[1][:-1]
+        r2 = sline[2]
+
+    if opcode == "svc":
+      r1 = int(r1) 
 
     return (r1, r2)
 
@@ -1103,10 +1392,11 @@ def write_header(line, outfile):
     header = "H"
 
     first_line = line.split()
+
+    has_label = label_test_2(line)
     #H NNNNNN AAA LLL
     if "start" in first_line:
       has_start = True
-      has_label = label_test_2(line)
       if has_label:
         starting_address = first_line[2]
       else:
